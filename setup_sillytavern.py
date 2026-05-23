@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SillyTavern 一键部署脚本 for Termux
+SillyTavern 一键部署脚本 for Termux (v2 - 自动处理本地修改)
 用法:
     pkg install python git -y
     python setup_sillytavern.py
@@ -11,7 +11,6 @@ SillyTavern 一键部署脚本 for Termux
 import os
 import sys
 import subprocess
-import shutil
 from pathlib import Path
 
 # ========== 配置 ==========
@@ -30,20 +29,16 @@ def run(cmd, check=True, shell=False):
         return subprocess.run(cmd, shell=True, check=check, executable="/bin/bash")
 
 def check_termux():
-    """确保在 Termux 环境中运行"""
     if not Path("/data/data/com.termux").exists():
         print("❌ 此脚本只能在 Termux 中运行！")
         sys.exit(1)
     print("✅ 检测到 Termux 环境")
 
 def install_dependencies():
-    """安装 Termux 所需软件包"""
     print("\n=== 更新软件源 & 安装依赖 ===")
     run(["pkg", "update", "-y"])
-    # 注意：pkg upgrade 已移除，避免配置冲突卡死
     deps = ["git", "nodejs-lts", "python", "build-essential", "binutils", "clang"]
     run(["pkg", "install", "-y"] + deps)
-    # 检查 node 版本
     node_version = subprocess.check_output(["node", "--version"], text=True).strip()
     if int(node_version.lstrip('v').split('.')[0]) < 18:
         print("❌ Node.js 版本过低，需要 18+，当前:", node_version)
@@ -51,7 +46,6 @@ def install_dependencies():
     print(f"✅ Node.js 版本: {node_version}")
 
 def clone_repo():
-    """克隆 SillyTavern 仓库"""
     if INSTALL_DIR.exists():
         print(f"⚠️ 目录 {INSTALL_DIR} 已存在，将进入更新模式...")
         os.chdir(INSTALL_DIR)
@@ -61,10 +55,16 @@ def clone_repo():
         run(["git", "clone", REPO_URL, str(INSTALL_DIR)])
         os.chdir(INSTALL_DIR)
 
-def select_version():
-    """版本选择（支持环境变量跳过交互）"""
+def stash_local_changes():
+    """储藏所有本地改动，保证切换版本干净"""
     os.chdir(INSTALL_DIR)
-    # 如果环境变量 SILLY_VERSION 已设置，直接使用
+    result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+    if result.stdout.strip():
+        print("⚠️ 检测到本地修改，自动 stash 保存...")
+        run(["git", "stash", "push", "--include-untracked", "-m", "auto-stash-before-switch"])
+
+def select_version():
+    os.chdir(INSTALL_DIR)
     env_version = os.environ.get("SILLY_VERSION")
     if env_version:
         target = env_version
@@ -94,19 +94,18 @@ def select_version():
         else:
             target = "release"
 
+    # 切换前先 stash
+    stash_local_changes()
     print(f"✅ 切换至: {target}")
     run(["git", "checkout", target])
     run(["git", "pull", "origin", target])
 
 def install_npm():
-    """安装 Node.js 依赖"""
     os.chdir(INSTALL_DIR)
     print("\n=== 安装 npm 依赖 (可能需要几分钟) ===")
     run(["npm", "install"])
 
 def create_launcher():
-    """创建健壮的一键启动脚本"""
-    # 生成启动脚本（绝对路径，避免软链接歧义）
     script_content = f"""#!/bin/bash
 cd {INSTALL_DIR}
 echo "Installing Node Modules..."
@@ -119,7 +118,6 @@ node server.js
     os.chmod(START_SCRIPT, 0o755)
     print(f"✅ 启动脚本已创建: {START_SCRIPT}")
 
-    # 创建或更新软链接
     if SYMLINK_PATH.exists() or os.path.islink(SYMLINK_PATH):
         SYMLINK_PATH.unlink()
     SYMLINK_PATH.symlink_to(START_SCRIPT)
