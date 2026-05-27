@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SillyTavern 一键部署脚本 v3 (修复 TLS、标签 pull、路径问题)
+SillyTavern 一键部署 v4 - 修复 SSL 后端冲突
 用法: pkg install python git -y && python setup_sillytavern.py
 """
 
@@ -17,12 +17,15 @@ def run(cmd, check=True):
     return subprocess.run(cmd, check=check)
 
 def fix_ssl():
-    """修复 Termux 下 Git 的 TLS 错误"""
-    print("🔧 安装 CA 证书并配置 SSL 后端...")
+    """修复 TLS 证书问题，并移除可能不支持的 sslBackend 设置"""
+    print("🔧 配置证书环境...")
+    # 清除之前可能设置的错误 SSL 后端
+    subprocess.run(["git", "config", "--global", "--unset", "http.sslBackend"],
+                   capture_output=True)
+    # 安装最新 CA 证书包
     run(["pkg", "install", "-y", "ca-certificates"])
+    # 更新系统证书链接 (Termux 中可用)
     os.system("update-ca-certificates 2>/dev/null")
-    # 优先使用 gnutls，对 Termux 更稳定
-    subprocess.run(["git", "config", "--global", "http.sslBackend", "gnutls"], capture_output=True)
 
 def check_termux():
     if not Path("/data/data/com.termux").exists():
@@ -31,12 +34,13 @@ def check_termux():
 
 def install_deps():
     run(["pkg", "update", "-y"])
-    run(["pkg", "install", "-y", "git", "nodejs-lts", "python", "build-essential", "binutils", "clang", "ca-certificates"])
+    run(["pkg", "install", "-y", "git", "nodejs-lts", "python",
+         "build-essential", "binutils", "clang", "ca-certificates"])
     fix_ssl()
 
 def clone_repo():
     if INSTALL_DIR.exists():
-        print(f"⚠️ 目录 {INSTALL_DIR} 已存在，更新模式")
+        print(f"⚠️ 目录 {INSTALL_DIR} 已存在，进入更新模式")
         os.chdir(INSTALL_DIR)
         run(["git", "fetch", "--all", "--tags", "--prune"])
     else:
@@ -51,12 +55,10 @@ def stash_changes():
         run(["git", "stash", "push", "--include-untracked", "-m", "auto-stash"])
 
 def is_tag(target):
-    """判断目标是否为标签"""
     res = subprocess.run(["git", "tag", "-l", target], capture_output=True, text=True)
     return res.stdout.strip() == target
 
 def is_branch(target):
-    """判断目标是否为远程分支"""
     res = subprocess.run(["git", "branch", "-r", "--list", f"origin/{target}"],
                          capture_output=True, text=True)
     return bool(res.stdout.strip())
@@ -92,26 +94,23 @@ def select_version():
     stash_changes()
     print(f"✅ 切换至: {target}")
 
-    # 判断目标类型，决定是否 pull
     if is_tag(target):
         print(f"📌 目标 {target} 是一个标签，直接 checkout (不 pull)")
         run(["git", "checkout", f"tags/{target}"])
     else:
-        # 分支或提交
         run(["git", "checkout", target])
         if is_branch(target):
             print(f"🌿 目标 {target} 是一个分支，执行 pull 更新...")
             try:
                 run(["git", "pull", "origin", target])
             except subprocess.CalledProcessError:
-                print("⚠️ pull 失败，可能是网络问题，但已切换到目标版本，可继续安装依赖...")
+                print("⚠️ pull 失败，可能网络问题，但已切换版本，继续安装依赖...")
         else:
             print("📌 目标是一个提交号，不执行 pull")
 
 def install_npm():
     os.chdir(INSTALL_DIR)
     print("\n=== 安装 npm 依赖 ===")
-    # 重试机制，防止网络波动
     for i in range(3):
         try:
             run(["npm", "install", "--no-audit", "--no-fund"])
@@ -123,7 +122,6 @@ def install_npm():
             subprocess.run(["npm", "cache", "clean", "--force"])
 
 def create_launcher():
-    # 绝对路径启动脚本，防止软链接工作目录问题
     script = f"""#!/bin/bash
 cd {INSTALL_DIR}
 echo "Installing Node Modules..."
@@ -135,7 +133,6 @@ node server.js
         f.write(script)
     os.chmod(START_SCRIPT, 0o755)
 
-    # 创建全局命令
     if SYMLINK_PATH.exists() or os.path.islink(SYMLINK_PATH):
         SYMLINK_PATH.unlink()
     SYMLINK_PATH.symlink_to(START_SCRIPT)
@@ -149,8 +146,8 @@ def main():
     install_npm()
     create_launcher()
     print("\n🎉 部署完成！")
-    print("👉 输入 sillytavern 即可启动")
-    print("👉 后台运行：使用 tmux 指令")
+    print("👉 快速启动: sillytavern")
+    print("👉 后台运行: tmux new-session -d -s tavern 'sillytavern'")
 
 if __name__ == "__main__":
     try:
