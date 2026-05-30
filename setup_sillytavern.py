@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-SillyTavern 一键部署 v4 - 修复 SSL 后端冲突
+SillyTavern 一键部署 v4 - 修复 SSL 后端冲突 + 局域网访问配置
 用法: pkg install python git -y && python setup_sillytavern.py
 """
 
-import os, sys, subprocess
+import os, sys, subprocess, socket
 from pathlib import Path
 
 REPO_URL = "https://github.com/SillyTavern/SillyTavern.git"
@@ -37,6 +37,8 @@ def install_deps():
     run(["pkg", "install", "-y", "git", "nodejs-lts", "python",
          "build-essential", "binutils", "clang", "ca-certificates"])
     fix_ssl()
+    # 安装修改配置所需的 pyyaml
+    run([sys.executable, "-m", "pip", "install", "pyyaml"])
 
 def clone_repo():
     if INSTALL_DIR.exists():
@@ -138,6 +140,43 @@ node server.js
     SYMLINK_PATH.symlink_to(START_SCRIPT)
     print("✅ 全局指令 sillytavern 已创建")
 
+def get_lan_ip():
+    """获取手机当前的局域网 IP"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return None
+
+def configure_lan_access():
+    """询问并配置 SillyTavern 以允许局域网访问"""
+    print("\n=== 局域网访问设置 ===")
+    print("是否允许同一 WiFi 下的手机/平板访问 SillyTavern？")
+    choice = input("启用局域网访问？(y/n) [默认: y]: ").strip().lower()
+    if choice and choice != 'y':
+        print("⏭️ 保持默认监听本地，只能本机访问。")
+        return False
+
+    import yaml
+    config_path = INSTALL_DIR / "config.yaml"
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+    else:
+        config = {}
+    # 强制开启监听所有接口，并关闭白名单限制
+    config['listen'] = True
+    config['whitelistMode'] = 'disabled'
+    # 移除可能存在的旧白名单列表
+    config.pop('whitelist', None)
+    with open(config_path, 'w') as f:
+        yaml.dump(config, f)
+    print("✅ 已配置 SillyTavern 监听所有网络接口（0.0.0.0:8000）")
+    return True
+
 def main():
     check_termux()
     install_deps()
@@ -145,9 +184,18 @@ def main():
     select_version()
     install_npm()
     create_launcher()
+    lan_enabled = configure_lan_access()
+
     print("\n🎉 部署完成！")
     print("👉 快速启动: sillytavern")
     print("👉 后台运行: tmux new-session -d -s tavern 'sillytavern'")
+    if lan_enabled:
+        ip = get_lan_ip()
+        if ip:
+            print(f"\n🌐 局域网访问地址: http://{ip}:8000")
+            print("   (请确保手机和平板/手机在同一 WiFi 下)")
+        else:
+            print("\n⚠️ 无法获取本机 IP，请手动查看 WiFi 设置中的 IP 地址")
 
 if __name__ == "__main__":
     try:
