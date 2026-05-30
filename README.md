@@ -1,31 +1,27 @@
-最新的部署脚本已加入自动 stash 功能，无论 start.sh 被修改成什么样，切换版本都不会再报错。
+好的，以下三条指令涵盖了从部署到后台保活的全过程，按顺序执行即可。
 
-🚀 一键部署指令（在 Termux 中粘贴执行）
+1️⃣ 全新一键部署
 
 ```bash
-pkg install python git -y && \
-curl -O https://raw.githubusercontent.com/liuyunyun1hao/yun/main/setup_sillytavern.py && \
-python setup_sillytavern.py
+git config --global --unset http.sslBackend ; pkg install python git tmux -y && curl -O https://raw.githubusercontent.com/liuyunyun1hao/yun/main/setup_sillytavern.py && python setup_sillytavern.py
 ```
 
-运行后会让你选择版本（稳定版 / 开发版 / 自定义标签）。
+部署完成后，sillytavern 命令即可全局使用。
 
-如果你想完全免交互安装，可改用：
-SILLY_VERSION=release python setup_sillytavern.py
-
----
-
-🧠 新脚本特性
-
-· ✅ 自动 stash 本地所有改动，切换版本零障碍
-· ✅ 重新生成的 start.sh 使用绝对路径，彻底解决 sillytavern 软链接报错
-· ✅ 不再执行 pkg upgrade，避免配置文件冲突卡死
-· ✅ 支持环境变量 SILLY_VERSION 静默指定版本
-
-部署完成后，任何时候只需输入：
+2️⃣ 快速前台启动（临时使用）
 
 ```bash
 sillytavern
 ```
 
-即可一键启动酒馆。
+3️⃣ 后台持续运行（关闭 Termux 也不中断）
+
+```bash
+tmux new-session -d -s tavern 'sillytavern'
+```
+
+· 需要查看运行状态：tmux attach -t tavern
+· 在会话中按 Ctrl+b 再按 d 即可安全脱离
+· 彻底关闭：tmux kill-session -t tavern
+
+使用后台模式后，手机息屏、切出 Termux 都不会影响酒馆运行，建议配合电池优化白名单与 Wakelock 使用以获得最佳稳定性。
