@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SillyTavern 智能管理脚本 v6 - 完美修正版
-特点：智能等待启动、网络容错、自动修复软链接、健壮版本切换、无坑菜单
+SillyTavern 智能管理脚本 v7 - Dan's Enhanced Daddy Edition
+特点：完美启动、优雅停止、版本切换无忧、局域网一键开启、地址即时显示/复制
 用法: python sillytavern_control.py
 """
 
@@ -13,6 +13,7 @@ import json
 import signal
 import socket
 import subprocess
+import re
 from pathlib import Path
 
 # ========== 配置 ==========
@@ -24,8 +25,8 @@ SESSION_NAME = "tavern"         # tmux 会话名
 PORT = 8000
 
 # ========== 核心工具函数 ==========
-def run(cmd, check=True, capture_output=False, shell=False, timeout=None):
-    """安全执行命令，打印并返回结果"""
+def run(cmd, check=True, capture_output=False, shell=False, timeout=None, cwd=None):
+    """安全执行命令，打印并返回结果。支持指定工作目录cwd。"""
     if isinstance(cmd, list):
         print(f"  > {' '.join(cmd)}")
     else:
@@ -35,18 +36,18 @@ def run(cmd, check=True, capture_output=False, shell=False, timeout=None):
             return subprocess.run(cmd, shell=True, check=check,
                                   executable="/bin/bash",
                                   capture_output=capture_output, text=True,
-                                  timeout=timeout)
+                                  timeout=timeout, cwd=cwd)
         else:
             return subprocess.run(cmd, check=check,
                                   capture_output=capture_output, text=True,
-                                  timeout=timeout)
+                                  timeout=timeout, cwd=cwd)
     except subprocess.CalledProcessError as e:
         if not check:
             return None
         print(f"  ❌ 命令执行失败: {e}")
         return None
     except subprocess.TimeoutExpired:
-        print("  ⏱️ 命令超时")
+        print("  ⏱️  命令超时")
         return None
 
 def check_port(port):
@@ -54,7 +55,6 @@ def check_port(port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(1)
     try:
-        # 尝试绑定，如果成功则说明端口空闲
         sock.bind(('0.0.0.0', port))
         sock.close()
         return False
@@ -64,7 +64,7 @@ def check_port(port):
 def wait_for_port(port, timeout=30):
     """等待端口变为开放状态，返回 True 表示成功"""
     print(f"  ⏳ 等待端口 {port} 就绪 (最多 {timeout}s)...", end='', flush=True)
-    for i in range(timeout * 2):   # 每0.5秒检查一次
+    for i in range(timeout * 2):
         if check_port(port):
             print(" ✅")
             return True
@@ -76,7 +76,6 @@ def wait_for_port(port, timeout=30):
 
 def get_local_ip():
     """智能获取本机局域网 IP（多级回退）"""
-    # 方法1：UDP 路由
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('223.5.5.5', 80))
@@ -86,7 +85,6 @@ def get_local_ip():
             return ip
     except:
         pass
-    # 方法2：ifconfig 过滤
     try:
         res = subprocess.run(['ifconfig'], capture_output=True, text=True, timeout=3)
         for line in res.stdout.split('\n'):
@@ -98,7 +96,6 @@ def get_local_ip():
                     return ip
     except:
         pass
-    # 方法3：主机名
     try:
         hostname = socket.gethostname()
         for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
@@ -113,11 +110,21 @@ def is_running():
     """检查酒馆是否在运行（通过端口状态）"""
     return check_port(PORT)
 
+# ----- 剪贴板功能 -----
+def copy_to_clipboard(text):
+    """尝试复制文本到剪贴板（Termux 环境），成功返回 True"""
+    try:
+        subprocess.run(['termux-clipboard-set', text], check=True, timeout=2,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except:
+        return False
+
+# ----- 停止相关 -----
 def kill_by_tmux():
-    """终止 tmux 会话及残留进程"""
+    """终止 tmux 会话及残留 node 进程"""
     subprocess.run(["tmux", "kill-session", "-t", SESSION_NAME],
                    capture_output=True, check=False)
-    # 强制杀死 node server.js 进程
     subprocess.run(["pkill", "-f", "node server.js"], capture_output=True, check=False)
 
 def safe_stop():
@@ -125,7 +132,6 @@ def safe_stop():
     if is_running():
         print("  🛑 正在停止酒馆...")
         kill_by_tmux()
-        # 等待端口释放
         for _ in range(10):
             if not check_port(PORT):
                 print("  ✅ 已停止")
@@ -136,19 +142,58 @@ def safe_stop():
     else:
         print("  ℹ️ 酒馆未运行")
 
-def stash_changes():
-    """暂存本地修改"""
+# ----- Git 辅助 -----
+def git_stash_and_restore():
+    """暂存本地修改（如果存在），返回之前的工作目录并恢复"""
+    prev_cwd = os.getcwd()
     os.chdir(INSTALL_DIR)
-    res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
-    if res.stdout.strip():
-        print("  ⚠️ 检测到本地改动，自动 stash 保存...")
-        run(["git", "stash", "push", "--include-untracked", "-m", "auto-stash"])
+    try:
+        res = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+        if res.stdout.strip():
+            print("  ⚠️ 检测到本地改动，自动 stash 保存...")
+            run(["git", "stash", "push", "--include-untracked", "-m", "auto-stash"])
+    finally:
+        os.chdir(prev_cwd)
 
+def git_switch_branch(target):
+    """智能切换到分支或标签，自动创建远程跟踪分支"""
+    os.chdir(INSTALL_DIR)
+    try:
+        # 先 fetch 所有远程信息
+        run(["git", "fetch", "--all", "--tags", "--prune"], check=False)
+        
+        # 检查是否为标签
+        tag_check = subprocess.run(["git", "tag", "-l", target], capture_output=True, text=True)
+        if tag_check.stdout.strip() == target:
+            print(f"  📌 切换到标签 {target}")
+            return run(["git", "checkout", f"tags/{target}"]) is not None
+        
+        # 处理分支
+        # 尝试作为本地分支
+        local_check = subprocess.run(["git", "show-ref", "--verify", f"refs/heads/{target}"],
+                                     capture_output=True, text=True)
+        if local_check.returncode == 0:
+            return run(["git", "checkout", target]) is not None
+        
+        # 尝试从远程创建跟踪分支
+        remote_check = subprocess.run(["git", "ls-remote", "--heads", "origin", target],
+                                      capture_output=True, text=True)
+        if target in remote_check.stdout:
+            print(f"  🌿 从远程创建分支 {target} 并切换")
+            return run(["git", "checkout", "-b", target, f"origin/{target}"]) is not None
+        
+        # 尝试直接 checkout（可能是远程已有的短分支名）
+        print(f"  🌿 直接尝试切换到 {target}")
+        return run(["git", "checkout", target]) is not None
+    finally:
+        os.chdir(INSTALL_DIR)  # 保证留在安装目录，不干扰后续
+
+# ----- 安装与配置 -----
 def create_launcher():
     """重建全局启动脚本和软链接"""
     script = f"""#!/bin/bash
 cd {INSTALL_DIR}
-echo "Installing Node Modules..."
+echo "Installing Node Modules (if needed)..."
 npm install --no-audit --no-fund --quiet --omit=dev 2>/dev/null
 echo "Entering SillyTavern..."
 node server.js
@@ -167,16 +212,15 @@ def fix_lan_config():
     if not cfg.exists():
         print("  ⚠️ config.yaml 不存在，跳过网络配置")
         return
-    import re
     with open(cfg, 'r') as f:
         content = f.read()
-    content = re.sub(r"^(\s*listen:\s*).*", r"\1true", content, flags=re.MULTILINE)
-    content = re.sub(r"^(\s*whitelistMode:\s*).*", r"\1false", content, flags=re.MULTILINE)
+    # 确保 listen: true, whitelistMode: false （支持不同缩进）
+    content = re.sub(r"^(\s*listen\s*:).*", r"\1 true", content, flags=re.MULTILINE)
+    content = re.sub(r"^(\s*whitelistMode\s*:).*", r"\1 false", content, flags=re.MULTILINE)
     with open(cfg, 'w') as f:
         f.write(content)
     print("  ✅ 已设置监听 0.0.0.0:8000 并关闭白名单")
 
-# ========== 环境准备 ==========
 def fix_network():
     """修复 Git SSL 和 pip 源问题"""
     print("\n🔧 修复网络环境...")
@@ -195,6 +239,8 @@ def install_deps():
             "ca-certificates", "tmux"]
     run(["pkg", "install", "-y"] + deps)
     fix_network()
+    # 确保 termux-api 存在以便复制剪贴板（可选）
+    run(["pkg", "install", "-y", "termux-api"], check=False)
 
 # ========== 部署与更新 ==========
 def deploy_or_update():
@@ -209,20 +255,20 @@ def deploy_or_update():
         print(f"\n🔄 更新现有酒馆...")
         os.chdir(INSTALL_DIR)
         run(["git", "fetch", "--all", "--tags", "--prune"])
-        stash_changes()
+        git_stash_and_restore()
         # 默认切换到 release 分支
         print("  📌 切换到稳定版 release ...")
-        if run(["git", "checkout", "release"]) is None:
-            print("❌ 切换分支失败")
+        if not git_switch_branch("release"):
+            print("❌ 切换分支失败，请手动检查")
             return
         # 尝试 pull，失败不中断（网络问题）
         run(["git", "pull", "origin", "release"], check=False)
 
     print("\n📦 安装 npm 依赖（可能需要几分钟）...")
-    for i in range(3):
-        if run(["npm", "install", "--no-audit", "--no-fund"]) is not None:
+    for attempt in range(3):
+        if run(["npm", "install", "--no-audit", "--no-fund"], cwd=INSTALL_DIR) is not None:
             break
-        print(f"    安装失败，第 {i+1} 次重试...")
+        print(f"    安装失败，第 {attempt+1} 次重试...")
         subprocess.run(["npm", "cache", "clean", "--force"], capture_output=True)
         time.sleep(2)
     else:
@@ -257,25 +303,15 @@ def switch_version():
         target = input("请输入分支名或标签名: ").strip() or "release"
 
     safe_stop()   # 切换前先停止
-    stash_changes()
+    git_stash_and_restore()   # 暂存本地修改
+    
     print(f"  ✅ 切换至: {target}")
-    # 判断是否为 tag
-    res = subprocess.run(["git", "tag", "-l", target], capture_output=True, text=True)
-    if res.stdout.strip() == target:
-        run(["git", "checkout", f"tags/{target}"])
-    else:
-        if run(["git", "checkout", target]) is None:
-            print("❌ 切换失败")
-            return
-        # 如果是分支，拉取最新
-        branch_check = subprocess.run(
-            ["git", "branch", "-r", "--list", f"origin/{target}"],
-            capture_output=True, text=True)
-        if branch_check.stdout.strip():
-            run(["git", "pull", "origin", target], check=False)
+    if not git_switch_branch(target):
+        print("❌ 切换失败，请检查版本是否存在")
+        return
 
     print("\n📦 安装 npm 依赖...")
-    if run(["npm", "install", "--no-audit", "--no-fund"]) is None:
+    if run(["npm", "install", "--no-audit", "--no-fund"], cwd=INSTALL_DIR) is None:
         print("⚠️ npm 安装可能失败，请稍后重试")
     else:
         print("✅ 版本切换完成，可使用菜单启动酒馆")
@@ -305,7 +341,7 @@ def start_tavern():
         ip = get_local_ip()
         print("\n✅ 酒馆启动成功！")
         print(f"   📱 局域网访问: http://{ip}:{PORT}")
-        print(f"   💻 本机访问: http://127.0.0.1:{PORT}")
+        print(f"   💻 本机访问:   http://127.0.0.1:{PORT}")
     else:
         print("❌ 启动超时，请检查以下可能原因：")
         print("   1. 依赖未完整安装 → 运行选项7 修复环境")
@@ -322,42 +358,88 @@ def restart_tavern():
     stop_tavern()
     start_tavern()
 
+# ========== 状态与显示 ==========
 def show_status():
-    """显示运行状态与地址"""
+    """显示运行状态与地址，并返回运行状态（用于菜单）"""
     running = is_running()
     print("\n🍺 SillyTavern 状态")
     print("─" * 30)
     print(f"  运行状态: {'🟢 运行中' if running else '🔴 已停止'}")
     if running:
         ip = get_local_ip()
-        print(f"  局域网 IP: {ip}")
-        print(f"  访问地址: http://{ip}:{PORT}")
+        lan_url = f"http://{ip}:{PORT}"
+        local_url = f"http://127.0.0.1:{PORT}"
+        print(f"  局域网 IP: {lan_url}")
+        print(f"  本机地址:   {local_url}")
+        return running, lan_url, local_url
     else:
         print("  酒馆未启动")
-    print("─" * 30)
+        return running, "", ""
 
 # ========== 菜单系统 ==========
 def clear_screen():
     os.system('clear')
 
 def show_menu():
+    """绘制主菜单，包含实时状态和快捷地址复制功能"""
     clear_screen()
-    status = "🟢 运行中" if is_running() else "🔴 已停止"
-    print("╭────────────────────────────────╮")
-    print("│   🍺 SillyTavern 控制台 v6   │")
-    print("╰────────────────────────────────╯")
-    print(f"   状态: {status}")
-    print("─" * 34)
+    running = is_running()
+    status_str = "🟢 运行中" if running else "🔴 已停止"
+    
+    # 构建头部
+    lines = []
+    lines.append("╭────────────────────────────────╮")
+    lines.append("│   🍺 SillyTavern 控制台 v7   │")
+    lines.append("╰────────────────────────────────╯")
+    lines.append(f"   状态: {status_str}")
+    lines.append("─" * 34)
+    
+    if running:
+        ip = get_local_ip()
+        lan_url = f"http://{ip}:{PORT}"
+        local_url = f"http://127.0.0.1:{PORT}"
+        lines.append("   🌐 访问地址:")
+        lines.append(f"      本机: {local_url}")
+        lines.append(f"      局域网: {lan_url}")
+        lines.append("─" * 34)
+        # 尝试复制局域网地址到剪贴板（静默）
+        # 我们只在菜单项提供复制选项，避免自动复制
+    else:
+        lan_url = ""
+        local_url = ""
+    
+    for line in lines:
+        print(line)
+    
     print("  1. 🚀 部署/更新酒馆")
     print("  2. ▶️  启动酒馆 (后台)")
     print("  3. ⏹️  停止酒馆")
     print("  4. 🔁 重启酒馆")
     print("  5. 📡 查看状态与地址")
-    print("  6. 🔀 切换酒馆版本")
-    print("  7. 🔧 一键修复网络/环境")
-    print("  8. 🌐 强制开启局域网访问")
-    print("  0. 退出")
+    if running and copy_to_clipboard_supported():
+        print("  6. 📋 复制局域网地址到剪贴板")
+        print("  7. 🔀 切换酒馆版本")
+        print("  8. 🔧 一键修复网络/环境")
+        print("  9. 🌐 强制开启局域网访问")
+        print("  0. 退出")
+        has_clipboard = True
+    else:
+        print("  6. 🔀 切换酒馆版本")
+        print("  7. 🔧 一键修复网络/环境")
+        print("  8. 🌐 强制开启局域网访问")
+        print("  0. 退出")
+        has_clipboard = False
+    
     print("─" * 34)
+    return running, lan_url, local_url, has_clipboard
+
+def copy_to_clipboard_supported():
+    """检查是否支持剪贴板复制（termux-clipboard-set 存在）"""
+    try:
+        subprocess.run(["which", "termux-clipboard-set"], capture_output=True, check=True)
+        return True
+    except:
+        return False
 
 def main():
     if not Path("/data/data/com.termux").exists():
@@ -365,33 +447,61 @@ def main():
         sys.exit(1)
 
     while True:
-        show_menu()
+        running, lan_url, local_url, has_clipboard = show_menu()
+        
         choice = input(" 请输入选项: ").strip()
-        if choice == "1":
-            deploy_or_update()
-        elif choice == "2":
-            start_tavern()
-        elif choice == "3":
-            stop_tavern()
-        elif choice == "4":
-            restart_tavern()
-        elif choice == "5":
-            show_status()
-        elif choice == "6":
-            switch_version()
-        elif choice == "7":
-            install_deps()
-            print("✅ 环境修复完成，可重新部署或启动")
-        elif choice == "8":
-            fix_lan_config()
-            print("✅ 已强制开启局域网监听并关闭白名单，重启后生效")
-        elif choice == "0":
-            print("👋 再见！")
-            break
+        
+        # 处理动态选项映射：如果存在剪贴板选项，数字6对应复制，否则6对应切换版本
+        if has_clipboard:
+            mapping = {
+                "1": deploy_or_update,
+                "2": start_tavern,
+                "3": stop_tavern,
+                "4": restart_tavern,
+                "5": show_status,
+                "6": lambda: handle_copy(lan_url),
+                "7": switch_version,
+                "8": install_deps,
+                "9": lambda: (fix_lan_config(), print("✅ 已强制开启局域网监听并关闭白名单，重启后生效")),
+                "0": lambda: None
+            }
+        else:
+            mapping = {
+                "1": deploy_or_update,
+                "2": start_tavern,
+                "3": stop_tavern,
+                "4": restart_tavern,
+                "5": show_status,
+                "6": switch_version,
+                "7": install_deps,
+                "8": lambda: (fix_lan_config(), print("✅ 已强制开启局域网监听并关闭白名单，重启后生效")),
+                "0": lambda: None
+            }
+        
+        if choice in mapping:
+            func = mapping[choice]
+            if func is None:
+                print("👋 再见！")
+                break
+            elif choice == "0":
+                break
+            else:
+                func()
         else:
             print("❌ 无效选项")
+        
         if choice != "0":
             input("\n👉 按 Enter 返回主菜单...")
+
+def handle_copy(url):
+    """复制地址并给出反馈"""
+    if not url:
+        print("❌ 没有可复制的地址，请先启动酒馆")
+        return
+    if copy_to_clipboard(url):
+        print(f"✅ 已复制: {url}")
+    else:
+        print(f"❌ 剪贴板复制失败，但地址是: {url}")
 
 if __name__ == "__main__":
     try:
