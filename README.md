@@ -16,5 +16,6 @@
 打开 Termux，直接复制并运行以下一行命令（自动拉取云端脚本并运行）：
 
 ```bash
-curl -O [https://raw.githubusercontent.com/liuyunyun1hao/yun/main/tavern.sh](https://raw.githubusercontent.com/liuyunyun1hao/yun/main/tavern.sh) && chmod +x tavern.sh && ./tavern.sh
+curl -O https://raw.githubusercontent.com/liuyunyun1hao/yun/main/tavern.sh && chmod +x tavern.sh && ./tavern.sh
+
 ```
