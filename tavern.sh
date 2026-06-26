@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# SillyTavern 傻酒馆 终极后台守护版 (支持穿透与OTA)
+# SillyTavern 傻酒馆 终极后台守护版 (支持局域网直连与OTA)
 # ==========================================
 
 INSTALL_DIR="$HOME/SillyTavern"
@@ -20,9 +20,9 @@ echo_err() { echo -e "${RED}[-] $1${NC}"; }
 
 # 1. 一键全自动部署
 deploy_tavern() {
-    echo_info "正在装配 Termux 基础环境 (含 Tmux 与 SSH 穿透依赖)..."
+    echo_info "正在装配 Termux 基础环境 (含 Tmux)..."
     pkg update && pkg upgrade -y
-    pkg install git nodejs-lts python make clang tmux openssh -y
+    pkg install git nodejs-lts python make clang tmux net-tools -y
     
     if [ -d "$INSTALL_DIR" ]; then
         echo_warn "已存在 $INSTALL_DIR 目录，跳过克隆。"
@@ -42,19 +42,17 @@ deploy_tavern() {
 # 2. 后台守护启动 (Tmux)
 start_tavern_bg() {
     if [ ! -d "$INSTALL_DIR" ]; then echo_err "未找到酒馆程序，请先部署"; return; fi
-    # 检查 tmux 是否安装
     if ! command -v tmux &> /dev/null; then pkg install tmux -y; fi
     
     if tmux has-session -t tavern 2>/dev/null; then
         echo_warn "酒馆已经在后台稳定运行中！"
-        echo_info "内网访问: http://127.0.0.1:8000"
+        echo_info "手机本机访问: http://127.0.0.1:8000"
     else
         cd "$INSTALL_DIR" || exit
-        # 创建一个名为 tavern 的 tmux 后台会话并运行 node server.js
         tmux new-session -d -s tavern 'node server.js'
         echo_info "🚀 傻酒馆已进入后台守护模式！"
         echo_info "现在你可以放心去做别的事，就算切出 Termux，酒馆也会保持运行。"
-        echo_warn "内网访问: http://127.0.0.1:8000"
+        echo_warn "手机本机访问: http://127.0.0.1:8000"
     fi
 }
 
@@ -68,19 +66,36 @@ stop_tavern_bg() {
     fi
 }
 
-# 4. 一键内网穿透 (免密稳定版)
-start_tunnel() {
-    echo_info "正在为您配置极速内网穿透环境..."
-    if ! command -v ssh &> /dev/null; then pkg install openssh -y; fi
+# 4. 开启局域网互连 (同 WiFi 访问)
+enable_lan_access() {
+    if [ ! -d "$INSTALL_DIR" ]; then echo_err "请先部署酒馆"; return; fi
+    cd "$INSTALL_DIR" || exit
     
-    echo_warn "================================================="
-    echo_warn "通道建立后，屏幕上会出现一个以 [https://] 开头的网址。"
-    echo_warn "复制该网址，即可在任何网络环境下访问你的酒馆！"
-    echo_warn "结束穿透请直接按键盘上的 [Ctrl + C]。"
-    echo_warn "================================================="
-    sleep 3
-    # 替换为更稳定的 localhost.run，指定 nokey 用户名强制免密
-    ssh -o StrictHostKeyChecking=no -R 80:localhost:8000 nokey@localhost.run
+    echo_info "正在配置局域网访问权限..."
+    
+    if [ ! -f "config.yaml" ]; then
+        echo_err "未找到 config.yaml。请先执行一次【选项 2】启动酒馆，让其生成默认配置后再试。"
+        return
+    fi
+    
+    # 修改配置：允许局域网访问，并开启白名单模式防止安全报错闪退
+    sed -i 's/listen: false/listen: true/g' config.yaml
+    sed -i 's/whitelistMode: false/whitelistMode: true/g' config.yaml
+    
+    # 抓取本机局域网 IP
+    WIFI_IP=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n 1)
+    
+    if [ -z "$WIFI_IP" ]; then
+        echo_err "无法获取 WiFi 局域网 IP，请检查手机是否已连接 WiFi，或授予 Termux 网络权限！"
+    else
+        echo_warn "================================================="
+        echo_warn "🌐 局域网共享已配置成功！"
+        echo_info "请确保你的其他设备（电脑/平板）和这台手机连着【同一个 WiFi】"
+        echo_info "然后在其他设备的浏览器中输入以下地址："
+        echo_warn "👉 http://$WIFI_IP:8000"
+        echo_warn "================================================="
+        echo_info "(提示：如果酒馆目前没启动，请记得按 2 让它在后台跑起来)"
+    fi
 }
 
 # 5. 版本管理
@@ -135,10 +150,8 @@ setup_shortcut() {
 self_update() {
     echo_info "正在连接 Github 检查最新脚本代码..."
     TMP_FILE="$PREFIX/tmp/tavern_new.sh"
-    # 静默下载云端代码到临时文件
     curl -sL "$RAW_URL" -o "$TMP_FILE"
     
-    # 简单的完整性验证：确保下载下来的文件里包含我们的核心关键词
     if grep -q "SillyTavern" "$TMP_FILE"; then
         mv "$TMP_FILE" "$HOME/tavern.sh"
         chmod +x "$HOME/tavern.sh"
@@ -162,7 +175,7 @@ while true; do
     echo -e "${BLUE} 2. [启动] 🚀 后台静默启动 (锁屏不断联)${NC}"
     echo -e "${BLUE} 3. [停止] ⏹ 关闭后台运行的酒馆${NC}"
     echo "------------------------------------------"
-    echo -e "${BLUE} 4. [穿透] 🌐 生成公网链接 (免密稳定版)${NC}"
+    echo -e "${BLUE} 4. [局域] 🌐 获取局域网直连 IP (同 WiFi 互通)${NC}"
     echo -e "${BLUE} 5. [版本] 🔄 回退或更新指定酒馆版本${NC}"
     echo -e "${BLUE} 6. [数据] 💾 备份 或 恢复个人核心数据${NC}"
     echo "------------------------------------------"
@@ -176,11 +189,11 @@ while true; do
         1) deploy_tavern; read -p "按回车键返回..." ;;
         2) start_tavern_bg; read -p "按回车键返回..." ;;
         3) stop_tavern_bg; read -p "按回车键返回..." ;;
-        4) start_tunnel; read -p "按回车键返回..." ;;
+        4) enable_lan_access; read -p "按回车键返回..." ;;
         5) manage_versions; read -p "按回车键返回..." ;;
         6) manage_data; read -p "按回车键返回..." ;;
         7) setup_shortcut; read -p "按回车键返回..." ;;
-        8) self_update ;; # 更新后会自动 exec 重启，无需 read 暂停
+        8) self_update ;; 
         0) echo_info "再见！"; exit 0 ;;
         *) echo_err "无效输入！"; sleep 1 ;;
     esac
