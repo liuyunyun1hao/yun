@@ -68,7 +68,7 @@ stop_tavern_bg() {
     fi
 }
 
-# 4. 一键内网穿透 (Pinggy)
+# 4. 一键内网穿透 (免密稳定版)
 start_tunnel() {
     echo_info "正在为您配置极速内网穿透环境..."
     if ! command -v ssh &> /dev/null; then pkg install openssh -y; fi
@@ -79,8 +79,8 @@ start_tunnel() {
     echo_warn "结束穿透请直接按键盘上的 [Ctrl + C]。"
     echo_warn "================================================="
     sleep 3
-    # 利用 Pinggy 极简隧道将本地 8000 端口映射到公网
-    ssh -p 443 -R0:localhost:8000 -o StrictHostKeyChecking=no a.pinggy.io
+    # 替换为更稳定的 localhost.run，指定 nokey 用户名强制免密
+    ssh -o StrictHostKeyChecking=no -R 80:localhost:8000 nokey@localhost.run
 }
 
 # 5. 版本管理
@@ -162,7 +162,7 @@ while true; do
     echo -e "${BLUE} 2. [启动] 🚀 后台静默启动 (锁屏不断联)${NC}"
     echo -e "${BLUE} 3. [停止] ⏹ 关闭后台运行的酒馆${NC}"
     echo "------------------------------------------"
-    echo -e "${BLUE} 4. [穿透] 🌐 生成公网链接 (免费无门槛)${NC}"
+    echo -e "${BLUE} 4. [穿透] 🌐 生成公网链接 (免密稳定版)${NC}"
     echo -e "${BLUE} 5. [版本] 🔄 回退或更新指定酒馆版本${NC}"
     echo -e "${BLUE} 6. [数据] 💾 备份 或 恢复个人核心数据${NC}"
     echo "------------------------------------------"
