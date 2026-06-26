@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# SillyTavern 傻酒馆 终极后台守护版 (支持局域网直连与OTA)
+# SillyTavern 傻酒馆 智能环境穿梭版 (支持新老版本无缝兼顾与OTA)
 # ==========================================
 
 INSTALL_DIR="$HOME/SillyTavern"
@@ -20,7 +20,7 @@ echo_err() { echo -e "${RED}[-] $1${NC}"; }
 
 # 1. 一键全自动部署
 deploy_tavern() {
-    echo_info "正在装配 Termux 基础环境 (含 Tmux)..."
+    echo_info "正在装配 Termux 基础环境 (默认安装最新 LTS 稳定版)..."
     pkg update && pkg upgrade -y
     pkg install git nodejs-lts python make clang tmux net-tools -y
     
@@ -70,7 +70,6 @@ stop_tavern_bg() {
 enable_lan_access() {
     if [ ! -d "$INSTALL_DIR" ]; then echo_err "请先部署酒馆"; return; fi
     cd "$INSTALL_DIR" || exit
-    
     echo_info "正在配置局域网访问权限..."
     
     if [ ! -f "config.yaml" ]; then
@@ -78,42 +77,72 @@ enable_lan_access() {
         return
     fi
     
-    # 修改配置：允许局域网访问，并开启白名单模式防止安全报错闪退
+    # 修改配置并开启白名单模式防止安全报错闪退
     sed -i 's/listen: false/listen: true/g' config.yaml
     sed -i 's/whitelistMode: false/whitelistMode: true/g' config.yaml
     
-    # 抓取本机局域网 IP
     WIFI_IP=$(ifconfig 2>/dev/null | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | head -n 1)
     
     if [ -z "$WIFI_IP" ]; then
-        echo_err "无法获取 WiFi 局域网 IP，请检查手机是否已连接 WiFi，或授予 Termux 网络权限！"
+        echo_err "无法获取 WiFi 局域网 IP，请检查手机是否已连接 WiFi！"
     else
         echo_warn "================================================="
         echo_warn "🌐 局域网共享已配置成功！"
-        echo_info "请确保你的其他设备（电脑/平板）和这台手机连着【同一个 WiFi】"
+        echo_info "请确保你的其他设备和这台手机连着【同一个 WiFi】"
         echo_info "然后在其他设备的浏览器中输入以下地址："
         echo_warn "👉 http://$WIFI_IP:8000"
         echo_warn "================================================="
-        echo_info "(提示：如果酒馆目前没启动，请记得按 2 让它在后台跑起来)"
     fi
 }
 
-# 5. 版本管理
+# 5. 智能版本管理 (核心进化：带环境自动侦测降级/升级)
 manage_versions() {
     if [ ! -d "$INSTALL_DIR" ]; then echo_err "请先部署酒馆"; return; fi
     cd "$INSTALL_DIR" || exit
+    
+    # 强制杀掉当前可能运行的酒馆
+    pkill node; tmux kill-session -t tavern 2>/dev/null
+    
+    echo_info "正在从云端拉取官方所有历史版本标签..."
     git fetch --tags
     echo_warn "最近的 10 个正式版本号参考："
     git tag -l | tail -n 10
-    read -p "请输入要切换的版本号 (如 1.12.0): " v_num
-    if [ -n "$v_num" ]; then
-        [ -d "data" ] && cp -r data "$HOME/temp_tavern_data"
-        git checkout -f "$v_num"
-        [ -d "$HOME/temp_tavern_data" ] && rm -rf data && mv "$HOME/temp_tavern_data" data
-        rm -rf node_modules package-lock.json
-        npm install
-        echo_info "🎉 成功切换至版本 $v_num ！"
+    echo "------------------------------------------"
+    
+    read -p "请输入你想切换的版本号 (例如 1.15.0、1.18.0 或 release): " v_num
+    if [ -z "$v_num" ]; then echo_err "版本号不能为空！"; return; fi
+    
+    # 先安全备份当前的用户 data 数据
+    [ -d "data" ] && cp -r data "$HOME/temp_tavern_data_run"
+    
+    # --- 💡 核心魔法逻辑：环境自动穿梭 ---
+    if [[ "$v_num" == "1.15."* || "$v_num" == "1.14."* || "$v_num" == "1.13."* ]]; then
+        echo_warn "⚠️ 检测到属于老旧版本，正在为您将底层环境安全降级至 Node.js v20..."
+        pkg uninstall nodejs-lts nodejs -y > /dev/null 2>&1
+        pkg install nodejs20 -y
+    else
+        echo_info "✨ 检测到属于新版分支，正在为您将底层环境安全升级至最新 Node.js LTS..."
+        pkg uninstall nodejs20 nodejs -y > /dev/null 2>&1
+        pkg install nodejs-lts -y
     fi
+    # -------------------------------------
+
+    echo_info "正在强制重置酒馆代码切片至: $v_num ..."
+    git checkout -f "$v_num"
+    
+    # 恢复数据防丢
+    if [ -d "$HOME/temp_tavern_data_run" ]; then
+        rm -rf data && mv "$HOME/temp_tavern_data_run" data
+    fi
+    
+    echo_info "正在深度清理旧缓存，并根据新环境重装专属依赖..."
+    rm -rf node_modules package-lock.json data/_webpack
+    npm config set registry https://registry.npmmirror.com/
+    npm config set fetch-retries 5
+    npm config set fetch-timeout 600000
+    npm install
+    
+    echo_info "🎉 恭喜！版本 $v_num 及其对应的底层 Node.js 环境已全部全自动配套搭建完毕！"
 }
 
 # 6. 数据备份与恢复
@@ -150,6 +179,7 @@ setup_shortcut() {
 self_update() {
     echo_info "正在连接 Github 检查最新脚本代码..."
     TMP_FILE="$PREFIX/tmp/tavern_new.sh"
+    mkdir -p "$PREFIX/tmp"
     curl -sL "$RAW_URL" -o "$TMP_FILE"
     
     if grep -q "SillyTavern" "$TMP_FILE"; then
@@ -160,7 +190,7 @@ self_update() {
         sleep 2
         exec bash "$HOME/tavern.sh"
     else
-        echo_err "更新失败！可能是网络波动或未读取到 Github 数据，请稍后再试。"
+        echo_err "更新失败！可能是网络波动，请稍后再试。"
         rm -f "$TMP_FILE"
     fi
 }
@@ -169,14 +199,14 @@ self_update() {
 while true; do
     clear
     echo -e "${GREEN}==========================================${NC}"
-    echo -e "${GREEN}   SillyTavern 傻酒馆 终极后台守护版      ${NC}"
+    echo -e "${GREEN}   SillyTavern 傻酒馆 智能环境穿梭版      ${NC}"
     echo -e "${GREEN}==========================================${NC}"
     echo -e "${BLUE} 1. [部署] 一键自动部署酒馆基础环境${NC}"
     echo -e "${BLUE} 2. [启动] 🚀 后台静默启动 (锁屏不断联)${NC}"
     echo -e "${BLUE} 3. [停止] ⏹ 关闭后台运行的酒馆${NC}"
     echo "------------------------------------------"
     echo -e "${BLUE} 4. [局域] 🌐 获取局域网直连 IP (同 WiFi 互通)${NC}"
-    echo -e "${BLUE} 5. [版本] 🔄 回退或更新指定酒馆版本${NC}"
+    echo -e "${BLUE} 5. [版本] 🔄 智能无痛切换版本 (含环境自适应)${NC}"
     echo -e "${BLUE} 6. [数据] 💾 备份 或 恢复个人核心数据${NC}"
     echo "------------------------------------------"
     echo -e "${BLUE} 7. [系统] ⌨️  写入全局指令 (输入“酒馆”秒开)${NC}"
